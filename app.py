@@ -48,6 +48,7 @@ def load_data():
         df['TEM_DIS'] = np.random.normal(1200, 50, 1000)
         df['LSP_Body'] = np.random.normal(1080, 30, 1000)
         df['Entry_Body'] = np.random.normal(1020, 25, 1000)
+        df['SLABTH'] = np.random.normal(210, 5, 1000)
         df['FT_HEAD'] = np.random.normal(850, 20, 1000)
         df['CT_HEAD'] = np.random.normal(600, 15, 1000)
         df['XVPTF8'] = np.random.normal(10, 2, 1000)
@@ -67,6 +68,8 @@ try:
     num_cols = col_names['num_cols']
     cat_cols = col_names['cat_cols']
     raw_df = load_data()
+    # สร้างคอลัมน์ชื่อข้อความเพื่อให้ Label กราฟสวยงาม
+    raw_df['Defect_Label'] = raw_df['Defect'].map({0: 'Good (ปกติ)', 1: 'NG (ตำหนิ)'})
 except Exception as e:
     st.error(f"⚠️ เกิดข้อผิดพลาดในการโหลด Model/Data: {e}")
     st.info("กรุณาตรวจสอบไฟล์ .keras, .save, และข้อมูล .xlsx")
@@ -129,7 +132,6 @@ class EdgeSeamOptimizer:
         return suggestions, safe_probs[best_idx], "optimized"
 
     def _preprocess(self, df):
-        # ป้องกัน KeyError: เติมคอลัมน์ตัวเลขที่ขาดหายไปอัตโนมัติ
         for col in num_cols:
             if col not in df.columns:
                 df[col] = 0.0
@@ -137,7 +139,6 @@ class EdgeSeamOptimizer:
         df_num = self.imputer.transform(df[num_cols])
         df_num_scaled = self.scaler.transform(df_num)
 
-        # ป้องกัน KeyError: เติมคอลัมน์หมวดหมู่ที่ขาดหายไปอัตโนมัติ
         if self.encoder and cat_cols:
             for col in cat_cols:
                 if col not in df.columns:
@@ -150,12 +151,10 @@ class EdgeSeamOptimizer:
         all_features = num_cols + (list(self.encoder.get_feature_names_out(cat_cols)) if (self.encoder and cat_cols) else [])
         X_df = pd.DataFrame(X_all, columns=all_features)
 
-        # ตรวจสอบว่า top_features มีอยู่ใน X_df หรือไม่
         missing_features = [f for f in self.top_features if f not in X_df.columns]
         if missing_features:
-            st.error(f"Missing features in model input: {missing_features}")
             for f in missing_features:
-                X_df[f] = 0 # Fallback
+                X_df[f] = 0
 
         return X_df[self.top_features]
 
@@ -167,7 +166,8 @@ optimizer = EdgeSeamOptimizer(model, imputer, scaler, encoder, top_features, thr
 st.sidebar.title("🏭 Edge Seam AI Menu")
 app_mode = st.sidebar.radio("เลือกโหมดการทำงาน:", [
     "1. ระบบทำนายและจัดพารามิเตอร์ (Predict & Optimize)",
-    "2. วิเคราะห์ความเสี่ยงเชิงลึก (Data Analytics & Risk Zones)"
+    "2. วิเคราะห์ความเสี่ยงเชิงลึก (Data Analytics & Risk Zones)",
+    "3. วิเคราะห์ภาพรวมพารามิเตอร์ (Global Feature Analysis)" # โหมดที่ 3 ใหม่
 ])
 
 # ==========================================
@@ -225,14 +225,12 @@ if app_mode == "1. ระบบทำนายและจัดพาราม�
         with c4: psrcms4 = st.number_input("PSRCMS4 (Pass4 Speed)", value=1.5, step=0.1)
         with c5: psrcms5 = st.number_input("PSRCMS5 (Pass5 Speed)", value=2.5, step=0.1)
 
-    # Base data construction
     base_data = {
         'SLPRNU': slabs_id, 'COMQUA': comqua, 'SLABTH': slabth, 'SLABWI': slabwi, 'SLABWE': slabwe,
         'SLFUTI': slfuti, 'HNSPDI': hnspdi, 'WNSPDI': wnspdi, 'FT_HEAD': ft_head, 'CT_HEAD': ct_head,
         'XVPTF8': xvptf8, 'RMEXTG': rmextg, 'PSDRFT1': psdrft1, 'PSDRFT2': psdrft2, 'PSDRFT3': psdrft3,
         'PSDRFT4': psdrft4, 'PSDRFT5': psdrft5, 'PSRCMS1': psrcms1, 'PSRCMS2': psrcms2, 'PSRCMS3': psrcms3,
         'PSRCMS4': psrcms4, 'PSRCMS5': psrcms5, 'LSP_Body': lsp_body, 'TEM_DIS': tem_dis, 'Entry_Body': entry_body,
-        # Fallbacks
         'PSDRFT': 25.2, 'CORPSR_M1': 8500.0, 'CORPSR_M2': 10000.0, 'CORPSR_M3': 11000.0,
         'CORPSR_M4': 12000.0, 'CORPSR_M5': 13500.0, 'RIDAMF1': 0.30, 'RIDAMF2': 0.32, 'RIDAMF3': 0.28, 'RIDAMF4': 0.23,
         'RIDAMF5': 0.20, 'RIDAMF6': 0.18, 'RIDAMF7': 0.15, 'CBTHSP': 2.5, 'CBRUSP': 4.5, 'DESCH1_MIN': 155.0,
@@ -277,11 +275,8 @@ elif app_mode == "2. วิเคราะห์ความเสี่ยง�
     st.markdown("วิเคราะห์ข้อมูลทางสถิติเพื่อหา **'ช่วงปลอดภัย (Operating Envelope)'** และ **'พื้นที่เสี่ยง (Red Zone)'** จากประวัติการผลิตจริง")
     st.divider()
 
-    # เพิ่มตัวแปรตั้งต้นที่สำคัญ (Base Parameters) เข้าไปให้สามารถเลือกดูสถิติและกราฟได้
     base_features_to_view = ['TEM_DIS', 'LSP_Body', 'Entry_Body', 'SLABTH', 'SLABWI', 'HNSPDI', 'WNSPDI']
     all_viewable_features = optimizer.controllable_cols + base_features_to_view
-
-    # ดึงเฉพาะตัวแปรที่มีอยู่ในข้อมูลจริงมาเป็นตัวเลือก
     available_features = [col for col in all_viewable_features if col in raw_df.columns]
 
     col1, col2 = st.columns([1, 2])
@@ -289,11 +284,9 @@ elif app_mode == "2. วิเคราะห์ความเสี่ยง�
         st.subheader("⚙️ เลือกพารามิเตอร์เพื่อวิเคราะห์")
         selected_feature = st.selectbox("Feature / Parameter:", available_features)
 
-        # คัดกรองข้อมูลเพื่อหาค่าสถิติสำหรับ 'Good' (Defect=0)
         good_df = raw_df[raw_df['Defect'] == 0]
         ng_df = raw_df[raw_df['Defect'] == 1]
 
-        # คำนวณขอบเขตที่ปลอดภัย (อ้างอิงจาก IQR หรือ Percentile ของกลุ่ม Good)
         q10 = good_df[selected_feature].quantile(0.10)
         q90 = good_df[selected_feature].quantile(0.90)
         median_good = good_df[selected_feature].median()
@@ -310,30 +303,22 @@ elif app_mode == "2. วิเคราะห์ความเสี่ยง�
         """)
 
     with col2:
-        # กราฟ Histogram / KDE Plot เพื่อดู Distribution 
         fig_dist = px.histogram(
-            raw_df, x=selected_feature, color='Defect', 
+            raw_df, x=selected_feature, color='Defect_Label', 
             barmode='overlay', marginal='box', nbins=50,
-            color_discrete_map={0: '#3498db', 1: '#e74c3c'},
+            color_discrete_map={'Good (ปกติ)': '#3498db', 'NG (ตำหนิ)': '#e74c3c'},
             title=f"การกระจายตัวของ {selected_feature} (Good vs NG)",
             opacity=0.7,
-            labels={'Defect': 'สถานะ', selected_feature: f'ค่า {selected_feature}'}
+            labels={'Defect_Label': 'สถานะ', selected_feature: f'ค่า {selected_feature}'}
         )
 
-        # เพิ่มเส้น Safe Zone (Vertical lines)
         fig_dist.add_vline(x=q10, line_dash="dash", line_color="green", annotation_text="10th %ile (Safe)")
         fig_dist.add_vline(x=q90, line_dash="dash", line_color="green", annotation_text="90th %ile (Safe)")
-
-        # ปรับชื่อ Legend ให้ดูง่าย
-        fig_dist.for_each_trace(lambda t: t.update(name='Good (ปกติ)' if t.name == '0' else 'NG (ตำหนิ)'))
         st.plotly_chart(fig_dist, use_container_width=True)
 
     st.divider()
-
-    # ส่วนที่ 2: Risk Probability Curve (Binned Risk Analysis)
     st.subheader(f"📈 โอกาสเกิด NG ในแต่ละช่วงของ {selected_feature} (Risk Probability Curve)")
 
-    # แบ่งช่วงพารามิเตอร์ออกเป็น 10 ช่วง (Bins) และหา % NG ในช่วงนั้นๆ
     try:
         raw_df['bin'] = pd.qcut(raw_df[selected_feature], q=10, duplicates='drop')
         risk_df = raw_df.groupby('bin')['Defect'].agg(['mean', 'count']).reset_index()
@@ -345,12 +330,90 @@ elif app_mode == "2. วิเคราะห์ความเสี่ยง�
             title=f"% ความเสี่ยงการเกิดตำหนิในแต่ละช่วงพารามิเตอร์",
             labels={'bin_str': f'ช่วงของ {selected_feature}', 'Risk_Percent': 'โอกาสเกิด NG (%)'}
         )
-        # ตกแต่งกราฟ (เปลี่ยนสี, ขนาดจุด)
         fig_risk.update_traces(line_color='#e67e22', marker=dict(size=10, color='red'))
-
-        # เพิ่มเส้น Threshold เพื่อเตือนภัย
         fig_risk.add_hline(y=threshold*100, line_dash="dot", line_color="red", annotation_text="AI Threshold Limits")
 
         st.plotly_chart(fig_risk, use_container_width=True)
     except Exception as e:
         st.warning(f"ไม่สามารถสร้าง Risk Curve ได้เนื่องจากการกระจายตัวของข้อมูลน้อยเกินไป: {e}")
+
+# ==========================================
+# โหมด 3: Global Feature Analysis (โหมดใหม่)
+# ==========================================
+elif app_mode == "3. วิเคราะห์ภาพรวมพารามิเตอร์ (Global Feature Analysis)":
+    st.title("🌐 ภาพรวมพารามิเตอร์เชิงลึก (Global Parameter Analysis)")
+    st.markdown("มุมมองสำหรับนักวิเคราะห์ (Parameter Analyst) เพื่อดูความสัมพันธ์แบบพหุคูณ (Multivariate) และโครงสร้างข้อมูลภาพรวม หา Pattern ที่ซ่อนอยู่ของรอยแตกขอบ")
+    st.divider()
+
+    st.subheader("⚙️ เลือกกลุ่มตัวแปรเพื่อวิเคราะห์ร่วมกัน (Base + Controllable Parameters)")
+
+    # ดึงคอลัมน์ทั้งหมดที่เป็นตัวเลข
+    numeric_cols = raw_df.select_dtypes(include=['float64', 'int64']).columns.tolist()
+    available_multi_cols = [c for c in numeric_cols if c not in ['Defect', 'Defect_Label']]
+
+    # กำหนดค่าเริ่มต้นเป็น Base Parameters ผสมกับ Controllable ที่สำคัญ
+    default_multi_cols = ['SLABTH', 'TEM_DIS', 'FT_HEAD', 'CT_HEAD', 'XVPTF8', 'PSDRFT1']
+    valid_defaults = [c for c in default_multi_cols if c in available_multi_cols]
+
+    selected_multi_cols = st.multiselect(
+        "เลือกพารามิเตอร์ 3-8 ตัว เพื่อดูปฏิสัมพันธ์ระหว่างกัน (แนะนำไม่เกิน 8 ตัวเพื่อความง่ายในการอ่านกราฟ):",
+        options=available_multi_cols,
+        default=valid_defaults
+    )
+
+    if len(selected_multi_cols) >= 2:
+        tab1, tab2, tab3 = st.tabs(["🔗 Correlation Heatmap", "🛤️ Parallel Coordinates", "📊 Scatter Matrix"])
+
+        with tab1:
+            st.markdown("##### เมทริกซ์ความสัมพันธ์ (Correlation Heatmap)")
+            st.write("ตรวจสอบการวิ่งตามกันของตัวแปร (Multicollinearity) ระหว่าง Base Parameters และ Setup Parameters")
+
+            # คำนวณ Correlation
+            corr_df = raw_df[selected_multi_cols + ['Defect']].corr()
+
+            fig_corr = px.imshow(
+                corr_df,
+                text_auto=".2f",
+                color_continuous_scale="RdBu_r",
+                zmin=-1, zmax=1,
+                aspect="auto",
+                title="ความสัมพันธ์ระหว่างพารามิเตอร์ (1 = แปรผันตามกัน, -1 = แปรผกผัน)"
+            )
+            st.plotly_chart(fig_corr, use_container_width=True)
+            st.info("💡 **Analyst Insight:** หากเซนเซอร์ 2 ตัวมีค่าความสัมพันธ์ (Correlation) ใกล้ 1.0 หรือ -1.0 มาก แปลว่าเครื่องจักร 2 ส่วนนี้มีค่าวิ่งตามกันอยู่เสมอ การปรับตั้งค่าตัวหนึ่งจะกระทบอีกตัวทันที")
+
+        with tab2:
+            st.markdown("##### เส้นทางพารามิเตอร์สู่ของเสีย (Parallel Coordinates)")
+            st.write("ติดตาม Flow ของกระบวนการผลิตตั้งแต่ต้นจนจบ ว่าเส้นทางแบบไหนที่พาไปสู่สถานะ NG (สีส้ม/เหลือง) หรือ Good (สีม่วง/น้ำเงิน)")
+
+            fig_par = px.parallel_coordinates(
+                raw_df,
+                dimensions=selected_multi_cols,
+                color='Defect',
+                color_continuous_scale=px.colors.diverging.Tealrose,
+                color_continuous_midpoint=0.5,
+                labels={col: col for col in selected_multi_cols}
+            )
+            st.plotly_chart(fig_par, use_container_width=True)
+            st.info("💡 **Analyst Insight:** สังเกตการกระจุกตัวของเส้นสีเหลือง (กลุ่มเสี่ยง NG) ว่ามักจะลากผ่านช่วงตัวเลขใดบนเสาพารามิเตอร์แต่ละเสา ซึ่งจะช่วยตีกรอบ Operating Window แบบกลุ่มได้")
+
+        with tab3:
+            st.markdown("##### ความสัมพันธ์เชิงลึกรายคู่ (Scatter Matrix)")
+            st.write("เจาะลึกการจับคู่ระหว่างตัวแปรแบบ 2 มิติ (2D) เพื่อดูพื้นที่ทับซ้อนและโครงสร้างการแยกกลุ่มของชิ้นงาน")
+
+            fig_scatter = px.scatter_matrix(
+                raw_df,
+                dimensions=selected_multi_cols,
+                color='Defect_Label',
+                color_discrete_map={'Good (ปกติ)': '#3498db', 'NG (ตำหนิ)': '#e74c3c'},
+                opacity=0.6,
+                title="ความสัมพันธ์แบบจับคู่พารามิเตอร์ (Pairwise Relationships)"
+            )
+            fig_scatter.update_traces(diagonal_visible=False)
+            # ปรับขนาด Layout ให้กว้างขึ้นเพื่อแสดงกราฟย่อยได้ชัดเจน
+            fig_scatter.update_layout(height=800)
+
+            st.plotly_chart(fig_scatter, use_container_width=True)
+            st.info("💡 **Analyst Insight:** มองหาช่องย่อย (Sub-plot) ที่จุดสีแดง (NG) และสีฟ้า (Good) แยกโซนออกจากกันอย่างชัดเจน นั่นคือ 'คู่พารามิเตอร์' (Pair) ที่มีนัยสำคัญสูงที่สุดในการแบ่งแยกของเสียครับ")
+    else:
+        st.warning("⚠️ กรุณาเลือกพารามิเตอร์จากช่องด้านบนอย่างน้อย 2 ตัวแปรเพื่อเริ่มการวิเคราะห์ภาพรวม")
