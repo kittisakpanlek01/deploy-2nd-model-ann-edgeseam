@@ -196,7 +196,8 @@ app_mode = st.sidebar.radio("เลือกโหมดการทำงาน
     "2. วิเคราะห์ความเสี่ยงเชิงลึก (Data Analytics & Risk Zones)",
     "3. วิเคราะห์ภาพรวมพารามิเตอร์ (Global Feature Analysis)",
     "4. 🔍 ความโปร่งใสของโมเดล (Explainable AI - SHAP)",
-    "5. 🚀 ระบบแนะนำขั้นสูง (Constrained Optimization)"
+    "5. 🚀 ระบบแนะนำขั้นสูง (Constrained Optimization)",
+    "6. 📂 ทำนายผลกลุ่มและแนะนำ (Batch Prediction)"
 ])
 
 # ==========================================
@@ -443,3 +444,101 @@ elif app_mode == "5. 🚀 ระบบแนะนำขั้นสูง (Cons
                 })
             st.table(pd.DataFrame(guide_data).set_index("Parameter"))
             st.info("ℹ️ *ค่าตัวเลขชุดนี้ผ่านการยืนยันแล้วว่าสอดคล้องกับกฎ Cooling Physics และ Draft Consistency*")
+
+# ==========================================
+# โหมด 6: ทำนายผลกลุ่มและแนะนำ (Batch Prediction)
+# ==========================================
+elif app_mode == "6. 📂 ทำนายผลกลุ่มและแนะนำ (Batch Prediction)":
+    st.title("📂 ระบบทำนายผลกลุ่มและแนะนำพารามิเตอร์ (Batch Prediction & Optimization)")
+    st.markdown("อัปโหลดไฟล์ Excel (.xlsx) หรือ CSV ที่มีข้อมูลพารามิเตอร์การตั้งค่าหลายๆ ชิ้นงาน (Rolls) ระบบจะรันตรวจสอบล่วงหน้า หากชิ้นงานใดมีความเสี่ยง (NG) ระบบจะคำนวณและแนบคำแนะนำการปรับแก้มาให้ในไฟล์ผลลัพธ์ทันที")
+    st.divider()
+
+    st.subheader("📥 1. ดาวน์โหลดเทมเพลตข้อมูล (Data Template)")
+    st.write("หากไม่มีไฟล์ตัวอย่าง สามารถดาวน์โหลดเทมเพลตโครงสร้างข้อมูลด้านล่างเพื่อนำไปกรอกได้")
+
+    # สร้าง Template ตัวอย่างดึงคอลัมน์สำคัญจาก Optimizer และ Base Parameters
+    template_cols = ['SLPRNU', 'COMQUA', 'SLABTH', 'SLABWI', 'SLABWE', 'SLFUTI', 'HNSPDI', 'WNSPDI', 'TEM_DIS', 'LSP_Body', 'Entry_Body'] + optimizer.controllable_cols
+    template_df = pd.DataFrame(columns=template_cols)
+    template_df.loc[0] = ['ID2605', 'SS400', 210, 1250, 22000, 3.5, 3.2, 1219, 1250, 1080, 1020, 850, 580, 8.5, 32.0, 42.2, 48.1, 48.6, 48.8, 50.2, 1.5, 1.5, 1.5, 1.5, 2.5]
+    template_df.loc[1] = ['ID2606', 'SS400', 220, 1200, 21500, 3.0, 3.0, 1200, 1220, 1050, 1000, 830, 560, 12.0, 30.0, 45.0, 47.0, 48.0, 48.0, 49.0, 1.5, 1.5, 1.5, 1.5, 2.5] # ตัวอย่างแถวที่จะเสี่ยง
+
+    template_csv = template_df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button(
+        label="📄 ดาวน์โหลดไฟล์ Template (.csv)",
+        data=template_csv,
+        file_name='edge_seam_batch_template.csv',
+        mime='text/csv'
+    )
+
+    st.subheader("📤 2. อัปโหลดไฟล์เพื่อวิเคราะห์ (Upload Data)")
+    uploaded_file = st.file_uploader("ลากไฟล์ Excel หรือ CSV มาวางที่นี่", type=['xlsx', 'xls', 'csv'])
+
+    if uploaded_file is not None:
+        try:
+            if uploaded_file.name.endswith('.csv'):
+                df_upload = pd.read_csv(uploaded_file)
+            else:
+                df_upload = pd.read_excel(uploaded_file)
+
+            st.write(f"📊 พบข้อมูลจำนวน **{len(df_upload)}** ชิ้นงาน (Rolls)")
+            st.dataframe(df_upload.head(3)) # แสดงตัวอย่าง 3 แถวแรก
+
+            if st.button("🚀 เริ่มการวิเคราะห์และหาวิธีแก้ไข (Start Bulk Analysis)", type="primary", use_container_width=True):
+                results = []
+                progress_text = "กำลังตรวจสอบและคำนวณ Optimizer ทีละรายการ..."
+                my_bar = st.progress(0, text=progress_text)
+
+                for i in range(len(df_upload)):
+                    row_df = df_upload.iloc[[i]].copy()
+                    row_df.reset_index(drop=True, inplace=True)
+
+                    # 1. ทำนายความเสี่ยง (Predict)
+                    X_curr = optimizer._preprocess(row_df)
+                    prob = model.predict(X_curr, verbose=0)[0][0]
+                    is_safe = prob < threshold
+
+                    status_text = "🟩 Good (ปลอดภัย)" if is_safe else "🟥 NG (เสี่ยงแตกขอบ)"
+                    suggestion_text = "-"
+
+                    # 2. หากเป็น NG ให้คำนวณหาวิธีรอด (Optimize)
+                    if not is_safe:
+                        sugg, opt_prob, opt_status = optimizer.optimize(row_df, advanced_mode=False)
+                        if opt_status == "optimized" and sugg:
+                            # จัดรูปแบบข้อความคำแนะนำ
+                            sugg_list = [f"{k}: {v['Current']:.1f} ➡️ {v['Suggested']:.1f}" for k, v in sugg.items()]
+                            suggestion_text = " | ".join(sugg_list) + f" (รอดความเสี่ยงเหลือ {opt_prob*100:.1f}%)"
+                        else:
+                            suggestion_text = "⚠️ ไม่พบทางแก้ไขที่ปลอดภัยภายใต้เงื่อนไข (+/- 5%)"
+
+                    roll_id = row_df['SLPRNU'].values[0] if 'SLPRNU' in row_df.columns else f"Roll_{i+1}"
+                    results.append({
+                        "Roll ID (SLPRNU)": roll_id,
+                        "Risk Prob (%)": round(prob * 100, 2),
+                        "Status Prediction": status_text,
+                        "AI Action Recommendations": suggestion_text
+                    })
+
+                    # อัปเดตแถบโหลด
+                    my_bar.progress((i + 1) / len(df_upload), text=f"กำลังประมวลผลม้วนที่ {i+1} / {len(df_upload)}")
+
+                my_bar.empty() # เคลียร์แถบโหลดเมื่อเสร็จ
+
+                # 3. สรุปผล
+                result_df = pd.DataFrame(results)
+                final_df = pd.concat([result_df, df_upload], axis=1) # เอาผลลัพธ์มาแปะกับข้อมูลเดิม
+
+                st.success("✅ การวิเคราะห์แบบกลุ่มเสร็จสิ้นสมบูรณ์!")
+                st.dataframe(result_df) # แสดงตารางสรุปผลบนเว็บ
+
+                # ปุ่มดาวน์โหลดผลรวม
+                output_csv = final_df.to_csv(index=False).encode('utf-8-sig') # ใช้ utf-8-sig เพื่อให้ Excel อ่านภาษาไทยออก
+                st.download_button(
+                    label="📥 ดาวน์โหลดผลลัพธ์ทั้งหมดไปใช้งาน (Download Full Report CSV)",
+                    data=output_csv,
+                    file_name='EdgeSeam_BatchPrediction_Report.csv',
+                    mime='text/csv',
+                    type="primary"
+                )
+
+        except Exception as e:
+            st.error(f"❌ เกิดข้อผิดพลาดในการอ่านไฟล์: {e}")
