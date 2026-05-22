@@ -129,10 +129,19 @@ class EdgeSeamOptimizer:
         return suggestions, safe_probs[best_idx], "optimized"
 
     def _preprocess(self, df):
+        # ป้องกัน KeyError: เติมคอลัมน์ตัวเลขที่ขาดหายไปอัตโนมัติ
+        for col in num_cols:
+            if col not in df.columns:
+                df[col] = 0.0
+
         df_num = self.imputer.transform(df[num_cols])
         df_num_scaled = self.scaler.transform(df_num)
 
+        # ป้องกัน KeyError: เติมคอลัมน์หมวดหมู่ที่ขาดหายไปอัตโนมัติ
         if self.encoder and cat_cols:
+            for col in cat_cols:
+                if col not in df.columns:
+                    df[col] = 'Unknown'
             df_cat = self.encoder.transform(df[cat_cols])
             X_all = np.hstack([df_num_scaled, df_cat])
         else:
@@ -228,8 +237,9 @@ if app_mode == "1. ระบบทำนายและจัดพาราม�
         'CORPSR_M4': 12000.0, 'CORPSR_M5': 13500.0, 'RIDAMF1': 0.30, 'RIDAMF2': 0.32, 'RIDAMF3': 0.28, 'RIDAMF4': 0.23,
         'RIDAMF5': 0.20, 'RIDAMF6': 0.18, 'RIDAMF7': 0.15, 'CBTHSP': 2.5, 'CBRUSP': 4.5, 'DESCH1_MIN': 155.0,
         'DESCH2_MIN': 155.0, 'TNVTRP1': 0.80, 'TNVTRP2': 0.90, 'TNVTRP3': 0.90, 'TNVTRP4': 0.90, 'TNVTRP5': 0.90,
-        'TNVTRP6': 0.9, 'TNVTRP7': 1.0, 'FTGM': 9500.0, 'FT_BODY': ft_head, 'CT_BODY': ct_head,
-        'SLAB_QUALITY': 'C032', 'OPCCO': '0', 'LCBXON': 'N', 'ENDUSE': 'S', 'PASSNR': 5, 'DescaleCondition': 'OK'
+        'TNVTRP6': 0.9, 'TNVTRP7': 1.0, 'FTGM': 9500.0, 'FT_BODY': ft_head,
+        'CT_BODY': ct_head, 'SLAB_QUALITY': 'C032', 'OPCCO': '0', 'LCBXON': 'N', 'ENDUSE': 'S', 'PASSNR': 5,
+        'DescaleCondition': 'OK'
     }
     input_df = pd.DataFrame([base_data])
 
@@ -267,13 +277,17 @@ elif app_mode == "2. วิเคราะห์ความเสี่ยง�
     st.markdown("วิเคราะห์ข้อมูลทางสถิติเพื่อหา **'ช่วงปลอดภัย (Operating Envelope)'** และ **'พื้นที่เสี่ยง (Red Zone)'** จากประวัติการผลิตจริง")
     st.divider()
 
-    # ดึงเฉพาะตัวแปรที่เป็น Numeric และ Control ได้ เพื่อความเข้าใจง่าย
-    available_features = [col for col in optimizer.controllable_cols if col in raw_df.columns]
+    # เพิ่มตัวแปรตั้งต้นที่สำคัญ (Base Parameters) เข้าไปให้สามารถเลือกดูสถิติและกราฟได้
+    base_features_to_view = ['TEM_DIS', 'LSP_Body', 'Entry_Body', 'SLABTH', 'SLABWI', 'HNSPDI', 'WNSPDI']
+    all_viewable_features = optimizer.controllable_cols + base_features_to_view
+
+    # ดึงเฉพาะตัวแปรที่มีอยู่ในข้อมูลจริงมาเป็นตัวเลือก
+    available_features = [col for col in all_viewable_features if col in raw_df.columns]
 
     col1, col2 = st.columns([1, 2])
     with col1:
         st.subheader("⚙️ เลือกพารามิเตอร์เพื่อวิเคราะห์")
-        selected_feature = st.selectbox("Controllable Feature:", available_features)
+        selected_feature = st.selectbox("Feature / Parameter:", available_features)
 
         # คัดกรองข้อมูลเพื่อหาค่าสถิติสำหรับ 'Good' (Defect=0)
         good_df = raw_df[raw_df['Defect'] == 0]
