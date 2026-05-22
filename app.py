@@ -497,7 +497,7 @@ elif app_mode == "6. 📂 ทำนายผลกลุ่มและแนะ
                     prob = model.predict(X_curr, verbose=0)[0][0]
                     is_safe = prob < threshold
 
-                    status_text = "🟩 Good (ปลอดภัย)" if is_safe else "🟥 NG (เสี่ยงแตกขอบ)"
+                    status_text = "Good" if is_safe else "NG (RiskEdgeSeam)"
                     suggestion_text = "-"
 
                     # 2. หากเป็น NG ให้คำนวณหาวิธีรอด (Optimize)
@@ -508,7 +508,7 @@ elif app_mode == "6. 📂 ทำนายผลกลุ่มและแนะ
                             sugg_list = [f"{k}: {v['Current']:.1f} ➡️ {v['Suggested']:.1f}" for k, v in sugg.items()]
                             suggestion_text = " | ".join(sugg_list) + f" (รอดความเสี่ยงเหลือ {opt_prob*100:.1f}%)"
                         else:
-                            suggestion_text = "⚠️ ไม่พบทางแก้ไขที่ปลอดภัยภายใต้เงื่อนไข (+/- 5%)"
+                            suggestion_text = "ไม่พบทางแก้ไขที่ปลอดภัยภายใต้เงื่อนไข (+/- 5%)"
 
                     roll_id = row_df['SLPRNU'].values[0] if 'SLPRNU' in row_df.columns else f"Roll_{i+1}"
                     results.append({
