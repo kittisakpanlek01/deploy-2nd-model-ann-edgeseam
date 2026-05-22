@@ -45,10 +45,17 @@ def load_data():
         df = pd.DataFrame(data, columns=[f'Feature_{i}' for i in range(40)])
 
         # จำลองตัวแปรหน้างานบางตัวให้เห็นภาพ
+        df['TEM_DIS'] = np.random.normal(1200, 50, 1000)
+        df['LSP_Body'] = np.random.normal(1080, 30, 1000)
+        df['Entry_Body'] = np.random.normal(1020, 25, 1000)
         df['FT_HEAD'] = np.random.normal(850, 20, 1000)
         df['CT_HEAD'] = np.random.normal(600, 15, 1000)
         df['XVPTF8'] = np.random.normal(10, 2, 1000)
         df['PSDRFT1'] = np.random.normal(45, 5, 1000)
+        df['PSDRFT2'] = np.random.normal(47, 5, 1000)
+        df['PSDRFT3'] = np.random.normal(48, 5, 1000)
+        df['PSDRFT4'] = np.random.normal(46, 5, 1000)
+        df['PSDRFT5'] = np.random.normal(44, 5, 1000)        
 
         # จำลองความสัมพันธ์: ถ้าอุณหภูมิต่ำไป หรือความเร็วสูงไป จะมีโอกาส NG มากขึ้น
         prob = (df['XVPTF8'] > 11.5) | (df['FT_HEAD'] < 830)
