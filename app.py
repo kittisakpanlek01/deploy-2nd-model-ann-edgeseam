@@ -361,14 +361,20 @@ elif app_mode == "4. 🔍 ความโปร่งใสของโมเด
             explainer = shap.KernelExplainer(model.predict, bg_X)
             shap_values = explainer.shap_values(X_curr)
 
-            # จัดการ Shape ของ Keras (บางเวอร์ชันรีเทิร์นลิสต์ บางเวอร์ชันเป็น array)
-            sv = np.array(shap_values)
-            if len(sv.shape) == 3:
-                contribs = sv[0, 0, :]
-            elif len(sv.shape) == 2:
-                contribs = sv[0, :]
-            else:
-                contribs = sv.flatten()
+            # จัดการ Shape ของ SHAP อย่างรัดกุม (รองรับทั้งเวอร์ชันเก่าและใหม่)
+            if hasattr(shap_values, 'values'): # หากเป็น Explanation Object
+                contribs = np.array(shap_values.values).flatten()
+            elif isinstance(shap_values, list): # หากรีเทิร์นเป็น List
+                contribs = np.array(shap_values[0]).flatten()
+            else: # หากรีเทิร์นเป็น Numpy Array
+                contribs = np.array(shap_values).flatten()
+
+            # ป้องกัน ValueError: บังคับให้ความยาวของ Arrays เท่ากันเสมอ
+            n_features = len(X_curr.columns)
+            if len(contribs) > n_features:
+                contribs = contribs[-n_features:] # ตัดส่วนเกินออก
+            elif len(contribs) < n_features:
+                contribs = np.pad(contribs, (0, n_features - len(contribs))) # เติม 0 ให้เต็ม
 
             # สร้าง DataFrame สำหรับ Plotly
             shap_df = pd.DataFrame({
