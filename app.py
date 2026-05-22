@@ -6,6 +6,10 @@ import joblib
 import os
 import plotly.express as px
 import plotly.graph_objects as go
+try:
+    import shap
+except ImportError:
+    st.error("⚠️ ไม่พบไลบรารี 'shap' กรุณาเพิ่ม 'shap' ใน requirements.txt หรือติดตั้งผ่าน pip install shap")
 
 # ตั้งค่าหน้าจอ Streamlit (Must be first Streamlit command)
 st.set_page_config(page_title="Edge Seam AI & Optimization System", layout="wide", page_icon="🏭")
@@ -39,12 +43,11 @@ def load_data():
         df = df.dropna(subset=['Defect'])
         return df
     else:
-        # Mock Data (กรณีไม่พบไฟล์ เพื่อให้ระบบทำงานและแสดงผลกราฟได้)
         np.random.seed(42)
         data = np.random.rand(1000, 40)
         df = pd.DataFrame(data, columns=[f'Feature_{i}' for i in range(40)])
 
-        # จำลองตัวแปรหน้างานบางตัวให้เห็นภาพ
+        # จำลองตัวแปรหน้างาน
         df['TEM_DIS'] = np.random.normal(1200, 50, 1000)
         df['LSP_Body'] = np.random.normal(1080, 30, 1000)
         df['Entry_Body'] = np.random.normal(1020, 25, 1000)
@@ -58,7 +61,6 @@ def load_data():
         df['PSDRFT4'] = np.random.normal(46, 5, 1000)
         df['PSDRFT5'] = np.random.normal(44, 5, 1000)        
 
-        # จำลองความสัมพันธ์: ถ้าอุณหภูมิต่ำไป หรือความเร็วสูงไป จะมีโอกาส NG มากขึ้น
         prob = (df['XVPTF8'] > 11.5) | (df['FT_HEAD'] < 830)
         df['Defect'] = np.where(prob, np.random.choice([0, 1], p=[0.3, 0.7]), np.random.choice([0, 1], p=[0.9, 0.1]))
         return df
@@ -68,7 +70,6 @@ try:
     num_cols = col_names['num_cols']
     cat_cols = col_names['cat_cols']
     raw_df = load_data()
-    # สร้างคอลัมน์ชื่อข้อความเพื่อให้ Label กราฟสวยงาม
     raw_df['Defect_Label'] = raw_df['Defect'].map({0: 'Good (ปกติ)', 1: 'NG (ตำหนิ)'})
 except Exception as e:
     st.error(f"⚠️ เกิดข้อผิดพลาดในการโหลด Model/Data: {e}")
@@ -76,7 +77,7 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. คลาส Prescriptive Engine (AI Suggestion)
+# 2. คลาส Prescriptive Engine (Standard & Advanced)
 # ==========================================
 class EdgeSeamOptimizer:
     def __init__(self, model, imputer, scaler, encoder, top_features, threshold):
@@ -90,21 +91,50 @@ class EdgeSeamOptimizer:
         ]
         self.adjustment_limit_pct = 0.05
 
-    def optimize(self, current_df):
+    def optimize(self, current_df, advanced_mode=False):
         X_curr = self._preprocess(current_df.copy())
         current_prob = self.model.predict(X_curr, verbose=0)[0][0]
 
         if current_prob < self.threshold:
             return None, current_prob, "safe"
 
-        n_sims = 800
+        n_sims = 2000 if advanced_mode else 800
         sim_df = pd.concat([current_df] * n_sims, ignore_index=True)
 
         for col in self.controllable_cols:
             if col in sim_df.columns:
                 curr_val = current_df.loc[0, col]
-                sim_df[col] = np.random.uniform(curr_val * (1 - self.adjustment_limit_pct),
-                                                curr_val * (1 + self.adjustment_limit_pct), size=n_sims)
+                # ขยาย Limit เป็น 10% สำหรับ Advanced Mode เพื่อหาทางออกที่กว้างขึ้น
+                limit = 0.10 if advanced_mode else self.adjustment_limit_pct
+                sim_df[col] = np.random.uniform(curr_val * (1 - limit),
+                                                curr_val * (1 + limit), size=n_sims)
+
+        # --- Advanced Physics Constraints (กฎทางฟิสิกส์วิศวกรรม) ---
+        if advanced_mode:
+            # กฎข้อที่ 1: CT_HEAD ต้องต่ำกว่า FT_HEAD อย่างน้อย 150 องศา (Cooling Logic)
+            if 'CT_HEAD' in sim_df.columns and 'FT_HEAD' in sim_df.columns:
+                valid_temp = sim_df['CT_HEAD'] <= (sim_df['FT_HEAD'] - 150)
+            else:
+                valid_temp = pd.Series(True, index=sim_df.index)
+
+            # กฎข้อที่ 2: Total Draft (ผลรวมแรงกด) ต้องคงที่เพื่อรักษาความหนา +/- 2%
+            draft_cols = ['PSDRFT1', 'PSDRFT2', 'PSDRFT3', 'PSDRFT4', 'PSDRFT5']
+            existing_draft_cols = [c for c in draft_cols if c in sim_df.columns]
+            if existing_draft_cols:
+                original_total_draft = current_df.loc[0, existing_draft_cols].sum()
+                sim_total_draft = sim_df[existing_draft_cols].sum(axis=1)
+                valid_draft = (sim_total_draft >= original_total_draft * 0.98) & (sim_total_draft <= original_total_draft * 1.02)
+            else:
+                valid_draft = pd.Series(True, index=sim_df.index)
+
+            # กรองข้อมูลให้เหลือเฉพาะ Simulation ที่เป็นไปได้ทางฟิสิกส์
+            valid_mask = valid_temp & valid_draft
+            sim_df = sim_df[valid_mask]
+
+            if len(sim_df) == 0:
+                return None, current_prob, "unable_due_to_physics"
+
+        # --------------------------------------------------------
 
         X_sims = self._preprocess(sim_df)
         sim_probs = self.model.predict(X_sims, verbose=0).flatten()
@@ -133,16 +163,14 @@ class EdgeSeamOptimizer:
 
     def _preprocess(self, df):
         for col in num_cols:
-            if col not in df.columns:
-                df[col] = 0.0
+            if col not in df.columns: df[col] = 0.0
 
         df_num = self.imputer.transform(df[num_cols])
         df_num_scaled = self.scaler.transform(df_num)
 
         if self.encoder and cat_cols:
             for col in cat_cols:
-                if col not in df.columns:
-                    df[col] = 'Unknown'
+                if col not in df.columns: df[col] = 'Unknown'
             df_cat = self.encoder.transform(df[cat_cols])
             X_all = np.hstack([df_num_scaled, df_cat])
         else:
@@ -153,8 +181,7 @@ class EdgeSeamOptimizer:
 
         missing_features = [f for f in self.top_features if f not in X_df.columns]
         if missing_features:
-            for f in missing_features:
-                X_df[f] = 0
+            for f in missing_features: X_df[f] = 0
 
         return X_df[self.top_features]
 
@@ -167,20 +194,17 @@ st.sidebar.title("🏭 Edge Seam AI Menu")
 app_mode = st.sidebar.radio("เลือกโหมดการทำงาน:", [
     "1. ระบบทำนายและจัดพารามิเตอร์ (Predict & Optimize)",
     "2. วิเคราะห์ความเสี่ยงเชิงลึก (Data Analytics & Risk Zones)",
-    "3. วิเคราะห์ภาพรวมพารามิเตอร์ (Global Feature Analysis)" # โหมดที่ 3 ใหม่
+    "3. วิเคราะห์ภาพรวมพารามิเตอร์ (Global Feature Analysis)",
+    "4. 🔍 ความโปร่งใสของโมเดล (Explainable AI - SHAP)",
+    "5. 🚀 ระบบแนะนำขั้นสูง (Constrained Optimization)"
 ])
 
 # ==========================================
-# โหมด 1: ระบบทำนายและการจัดการหน้างาน
+# ฟังก์ชันสร้างข้อมูล Base Input (ใช้ร่วมกันหลายโหมด)
 # ==========================================
-if app_mode == "1. ระบบทำนายและจัดพารามิเตอร์ (Predict & Optimize)":
-    st.title("🏭 Edge Seam Defect Prediction & Parameter Optimization")
-    st.markdown("ระบบวิเคราะห์จุดเสี่ยงการเกิด Edge Seam Defect และแนะนำการตั้งค่าพารามิเตอร์ลูกรีดอัตโนมัติ")
-    st.divider()
-
+def create_input_ui():
     st.subheader("📋 1. ข้อมูลคุณลักษณะเหล็กแผ่น (Uncontrollable Base Parameters)")
     col1, col2, col3, col4 = st.columns(4)
-
     with col1:
         slabs_id = st.text_input("SLPRNU (SLAB Supplier)", value="ID2605")
         comqua = st.text_input("COMQUA (เกรดเหล็ก)", value="SS400")
@@ -198,17 +222,13 @@ if app_mode == "1. ระบบทำนายและจัดพาราม�
         wnspdi = st.number_input("WNSPDI (ความกว้าง)", value=1219.0, step=5.0)
 
     st.subheader("⚙️ 2. พารามิเตอร์การผลิตปัจจุบัน (Controllable Setup Parameters)")
-    st.caption("ระบุค่าที่กำลังตั้งค่าอยู่ในปัจจุบันเพื่อตรวจสอบจุดเสี่ยง")
-
     tab_temp, tab_draft, tab_roll = st.tabs(["🌡️ อุณหภูมิและความเร็ว", "📉 อัตราการกดลูกรีด (RM Draft)", "🔄 ความเร็วลูกรีด (RM Speed)"])
-
     with tab_temp:
         c1, c2, c3, c4 = st.columns(4)
         with c1: ft_head = st.number_input("FT_HEAD (องศา)", value=850.0, step=10.0)
         with c2: ct_head = st.number_input("CT_HEAD (องศา)", value=580.0, step=10.0)
         with c3: xvptf8 = st.number_input("XVPTF8 (ความเร็วลูกรีด)", value=8.5, step=0.5)
         with c4: rmextg = st.number_input("RMEXTG (BarThk)", value=32.0, step=1.0)
-
     with tab_draft:
         c1, c2, c3, c4, c5 = st.columns(5)
         with c1: psdrft1 = st.number_input("PSDRFT1 (Pass1 Draft)", value=42.2, step=0.5)
@@ -216,7 +236,6 @@ if app_mode == "1. ระบบทำนายและจัดพาราม�
         with c3: psdrft3 = st.number_input("PSDRFT3 (Pass3 Draft)", value=48.6, step=0.5)
         with c4: psdrft4 = st.number_input("PSDRFT4 (Pass4 Draft)", value=48.8, step=0.5)
         with c5: psdrft5 = st.number_input("PSDRFT5 (Pass5 Draft)", value=50.2, step=0.5)
-
     with tab_roll:
         c1, c2, c3, c4, c5 = st.columns(5)
         with c1: psrcms1 = st.number_input("PSRCMS1 (Pass1 Speed)", value=1.5, step=0.1)
@@ -239,12 +258,22 @@ if app_mode == "1. ระบบทำนายและจัดพาราม�
         'CT_BODY': ct_head, 'SLAB_QUALITY': 'C032', 'OPCCO': '0', 'LCBXON': 'N', 'ENDUSE': 'S', 'PASSNR': 5,
         'DescaleCondition': 'OK'
     }
-    input_df = pd.DataFrame([base_data])
+    return pd.DataFrame([base_data])
+
+# ==========================================
+# โหมด 1: ระบบทำนายและการจัดการหน้างาน
+# ==========================================
+if app_mode == "1. ระบบทำนายและจัดพารามิเตอร์ (Predict & Optimize)":
+    st.title("🏭 Edge Seam Defect Prediction & Parameter Optimization")
+    st.markdown("ระบบวิเคราะห์จุดเสี่ยงและแนะนำพารามิเตอร์แบบมาตรฐาน (Standard Optimization)")
+    st.divider()
+
+    input_df = create_input_ui()
 
     st.divider()
     if st.button("📊 วิเคราะห์และตรวจสอบพารามิเตอร์การผลิต", type="primary", use_container_width=True):
         with st.spinner("AI กำลังวิเคราะห์จุดเสี่ยงและคำนวณทางเลือกกระบวนการผลิต..."):
-            suggestions, final_prob, status = optimizer.optimize(input_df)
+            suggestions, final_prob, status = optimizer.optimize(input_df, advanced_mode=False)
 
         st.subheader("🎯 ผลการวิเคราะห์จากระบบ AI")
         if status == "safe":
@@ -254,27 +283,18 @@ if app_mode == "1. ระบบทำนายและจัดพาราม�
             st.error(f"🟥 **จุดเสี่ยงระดับสูง (NG DETECTED):** พารามิเตอร์ปัจจุบันมีความเสี่ยงเกิดแตกขอบ (Risk Score: {final_prob * 100:.2f}%)")
 
             if status == "optimized" and suggestions:
-                st.warning(f"💡 **AI Setup Guidelines:** ค้นพบแนวทางการปรับปรุงพารามิเตอร์เพื่อลดความเสี่ยงลง (ความเสี่ยงจะลดลงเหลือ {final_prob * 100:.2f}%)")
-                guide_data = []
-                for k, v in suggestions.items():
-                    guide_data.append({
-                        "Parameter": k,
-                        "ปัจจุบัน (Current)": f"{v['Current']:.2f}",
-                        "แนะนำ (Guideline)": f"{v['Suggested']:.2f}",
-                        "การกระทำ (Action)": f"🔺 เพิ่มขึ้น (+{v['Change']:.2f})" if v['Change'] > 0 else f"🔻 ลดลง ({v['Change']:.2f})"
-                    })
+                st.warning(f"💡 **AI Setup Guidelines:** แนะนำการปรับปรุงพารามิเตอร์เพื่อลดความเสี่ยงลง (ความเสี่ยงจะลดลงเหลือ {final_prob * 100:.2f}%)")
+                guide_data = [{"Parameter": k, "ปัจจุบัน (Current)": f"{v['Current']:.2f}", "แนะนำ (Guideline)": f"{v['Suggested']:.2f}", "การกระทำ (Action)": f"🔺 เพิ่มขึ้น (+{v['Change']:.2f})" if v['Change'] > 0 else f"🔻 ลดลง ({v['Change']:.2f})"} for k, v in suggestions.items()]
                 st.table(pd.DataFrame(guide_data).set_index("Parameter"))
             elif status == "unable":
-                st.warning("⚠️ **ไม่พบทางแก้ไขที่ปลอดภัยภายใต้เงื่อนไขจำกัด 5%** กรุณาตรวจสอบสภาวะเครื่องจักร")
+                st.warning("⚠️ **ไม่พบทางแก้ไขที่ปลอดภัยภายใต้เงื่อนไขจำกัด 5%**")
 
 # ==========================================
-# โหมด 2: Data Science Analytics & Risk Zones
+# โหมด 2: Data Analytics & Risk Zones
 # ==========================================
 elif app_mode == "2. วิเคราะห์ความเสี่ยงเชิงลึก (Data Analytics & Risk Zones)":
     st.title("🔬 เจาะลึกช่วงพารามิเตอร์ (Safe Range & NG Risk Analysis)")
-    st.markdown("วิเคราะห์ข้อมูลทางสถิติเพื่อหา **'ช่วงปลอดภัย (Operating Envelope)'** และ **'พื้นที่เสี่ยง (Red Zone)'** จากประวัติการผลิตจริง")
     st.divider()
-
     base_features_to_view = ['TEM_DIS', 'LSP_Body', 'Entry_Body', 'SLABTH', 'SLABWI', 'HNSPDI', 'WNSPDI']
     all_viewable_features = optimizer.controllable_cols + base_features_to_view
     available_features = [col for col in all_viewable_features if col in raw_df.columns]
@@ -283,137 +303,137 @@ elif app_mode == "2. วิเคราะห์ความเสี่ยง�
     with col1:
         st.subheader("⚙️ เลือกพารามิเตอร์เพื่อวิเคราะห์")
         selected_feature = st.selectbox("Feature / Parameter:", available_features)
-
         good_df = raw_df[raw_df['Defect'] == 0]
-        ng_df = raw_df[raw_df['Defect'] == 1]
-
         q10 = good_df[selected_feature].quantile(0.10)
         q90 = good_df[selected_feature].quantile(0.90)
-        median_good = good_df[selected_feature].median()
-
-        st.info(f"""
-        **💡 ขอบเขตแนะนำทางสถิติ (Statistical Safe Range):**
-        - ค่าที่พบบ่อย (Median): **{median_good:.2f}**
-        - ช่วงปลอดภัย (80% ของชิ้นงานที่ผ่าน): **{q10:.2f} - {q90:.2f}**
-        """)
-
-        st.markdown("""
-        **คำอธิบายกราฟ (Interpretation):**
-        *กราฟด้านขวาแสดงการกระจายตัว หากพื้นที่สีแดง (NG) กระจุกตัวสูงแปลกแยกจากสีฟ้า (Good) นั่นคือ **Risk Zone** ที่ควรหลีกเลี่ยงเวลาตั้งค่าเครื่องจักร*
-        """)
-
+        st.info(f"**💡 ช่วงปลอดภัย (80% ของชิ้นงานที่ผ่าน):** {q10:.2f} - {q90:.2f}")
     with col2:
-        fig_dist = px.histogram(
-            raw_df, x=selected_feature, color='Defect_Label', 
-            barmode='overlay', marginal='box', nbins=50,
-            color_discrete_map={'Good (ปกติ)': '#3498db', 'NG (ตำหนิ)': '#e74c3c'},
-            title=f"การกระจายตัวของ {selected_feature} (Good vs NG)",
-            opacity=0.7,
-            labels={'Defect_Label': 'สถานะ', selected_feature: f'ค่า {selected_feature}'}
-        )
-
-        fig_dist.add_vline(x=q10, line_dash="dash", line_color="green", annotation_text="10th %ile (Safe)")
-        fig_dist.add_vline(x=q90, line_dash="dash", line_color="green", annotation_text="90th %ile (Safe)")
+        fig_dist = px.histogram(raw_df, x=selected_feature, color='Defect_Label', barmode='overlay', marginal='box', nbins=50, color_discrete_map={'Good (ปกติ)': '#3498db', 'NG (ตำหนิ)': '#e74c3c'}, title=f"การกระจายตัวของ {selected_feature} (Good vs NG)", opacity=0.7)
+        fig_dist.add_vline(x=q10, line_dash="dash", line_color="green")
+        fig_dist.add_vline(x=q90, line_dash="dash", line_color="green")
         st.plotly_chart(fig_dist, use_container_width=True)
 
-    st.divider()
-    st.subheader(f"📈 โอกาสเกิด NG ในแต่ละช่วงของ {selected_feature} (Risk Probability Curve)")
-
-    try:
-        raw_df['bin'] = pd.qcut(raw_df[selected_feature], q=10, duplicates='drop')
-        risk_df = raw_df.groupby('bin')['Defect'].agg(['mean', 'count']).reset_index()
-        risk_df['bin_str'] = risk_df['bin'].astype(str)
-        risk_df['Risk_Percent'] = risk_df['mean'] * 100
-
-        fig_risk = px.line(
-            risk_df, x='bin_str', y='Risk_Percent', markers=True,
-            title=f"% ความเสี่ยงการเกิดตำหนิในแต่ละช่วงพารามิเตอร์",
-            labels={'bin_str': f'ช่วงของ {selected_feature}', 'Risk_Percent': 'โอกาสเกิด NG (%)'}
-        )
-        fig_risk.update_traces(line_color='#e67e22', marker=dict(size=10, color='red'))
-        fig_risk.add_hline(y=threshold*100, line_dash="dot", line_color="red", annotation_text="AI Threshold Limits")
-
-        st.plotly_chart(fig_risk, use_container_width=True)
-    except Exception as e:
-        st.warning(f"ไม่สามารถสร้าง Risk Curve ได้เนื่องจากการกระจายตัวของข้อมูลน้อยเกินไป: {e}")
-
 # ==========================================
-# โหมด 3: Global Feature Analysis (โหมดใหม่)
+# โหมด 3: Global Feature Analysis
 # ==========================================
 elif app_mode == "3. วิเคราะห์ภาพรวมพารามิเตอร์ (Global Feature Analysis)":
     st.title("🌐 ภาพรวมพารามิเตอร์เชิงลึก (Global Parameter Analysis)")
-    st.markdown("มุมมองสำหรับนักวิเคราะห์ (Parameter Analyst) เพื่อดูความสัมพันธ์แบบพหุคูณ (Multivariate) และโครงสร้างข้อมูลภาพรวม หา Pattern ที่ซ่อนอยู่ของรอยแตกขอบ")
     st.divider()
-
-    st.subheader("⚙️ เลือกกลุ่มตัวแปรเพื่อวิเคราะห์ร่วมกัน (Base + Controllable Parameters)")
-
-    # ดึงคอลัมน์ทั้งหมดที่เป็นตัวเลข
     numeric_cols = raw_df.select_dtypes(include=['float64', 'int64']).columns.tolist()
     available_multi_cols = [c for c in numeric_cols if c not in ['Defect', 'Defect_Label']]
-
-    # กำหนดค่าเริ่มต้นเป็น Base Parameters ผสมกับ Controllable ที่สำคัญ
     default_multi_cols = ['SLABTH', 'TEM_DIS', 'FT_HEAD', 'CT_HEAD', 'XVPTF8', 'PSDRFT1']
     valid_defaults = [c for c in default_multi_cols if c in available_multi_cols]
 
-    selected_multi_cols = st.multiselect(
-        "เลือกพารามิเตอร์ 3-8 ตัว เพื่อดูปฏิสัมพันธ์ระหว่างกัน (แนะนำไม่เกิน 8 ตัวเพื่อความง่ายในการอ่านกราฟ):",
-        options=available_multi_cols,
-        default=valid_defaults
-    )
+    selected_multi_cols = st.multiselect("เลือกพารามิเตอร์ 3-8 ตัว เพื่อดูปฏิสัมพันธ์:", options=available_multi_cols, default=valid_defaults)
 
     if len(selected_multi_cols) >= 2:
-        tab1, tab2, tab3 = st.tabs(["🔗 Correlation Heatmap", "🛤️ Parallel Coordinates", "📊 Scatter Matrix"])
-
+        tab1, tab2 = st.tabs(["🔗 Correlation Heatmap", "🛤️ Parallel Coordinates"])
         with tab1:
-            st.markdown("##### เมทริกซ์ความสัมพันธ์ (Correlation Heatmap)")
-            st.write("ตรวจสอบการวิ่งตามกันของตัวแปร (Multicollinearity) ระหว่าง Base Parameters และ Setup Parameters")
-
-            # คำนวณ Correlation
             corr_df = raw_df[selected_multi_cols + ['Defect']].corr()
-
-            fig_corr = px.imshow(
-                corr_df,
-                text_auto=".2f",
-                color_continuous_scale="RdBu_r",
-                zmin=-1, zmax=1,
-                aspect="auto",
-                title="ความสัมพันธ์ระหว่างพารามิเตอร์ (1 = แปรผันตามกัน, -1 = แปรผกผัน)"
-            )
+            fig_corr = px.imshow(corr_df, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto")
             st.plotly_chart(fig_corr, use_container_width=True)
-            st.info("💡 **Analyst Insight:** หากเซนเซอร์ 2 ตัวมีค่าความสัมพันธ์ (Correlation) ใกล้ 1.0 หรือ -1.0 มาก แปลว่าเครื่องจักร 2 ส่วนนี้มีค่าวิ่งตามกันอยู่เสมอ การปรับตั้งค่าตัวหนึ่งจะกระทบอีกตัวทันที")
-
         with tab2:
-            st.markdown("##### เส้นทางพารามิเตอร์สู่ของเสีย (Parallel Coordinates)")
-            st.write("ติดตาม Flow ของกระบวนการผลิตตั้งแต่ต้นจนจบ ว่าเส้นทางแบบไหนที่พาไปสู่สถานะ NG (สีส้ม/เหลือง) หรือ Good (สีม่วง/น้ำเงิน)")
-
-            fig_par = px.parallel_coordinates(
-                raw_df,
-                dimensions=selected_multi_cols,
-                color='Defect',
-                color_continuous_scale=px.colors.diverging.Tealrose,
-                color_continuous_midpoint=0.5,
-                labels={col: col for col in selected_multi_cols}
-            )
+            fig_par = px.parallel_coordinates(raw_df, dimensions=selected_multi_cols, color='Defect', color_continuous_scale=px.colors.diverging.Tealrose, color_continuous_midpoint=0.5)
             st.plotly_chart(fig_par, use_container_width=True)
-            st.info("💡 **Analyst Insight:** สังเกตการกระจุกตัวของเส้นสีเหลือง (กลุ่มเสี่ยง NG) ว่ามักจะลากผ่านช่วงตัวเลขใดบนเสาพารามิเตอร์แต่ละเสา ซึ่งจะช่วยตีกรอบ Operating Window แบบกลุ่มได้")
 
-        with tab3:
-            st.markdown("##### ความสัมพันธ์เชิงลึกรายคู่ (Scatter Matrix)")
-            st.write("เจาะลึกการจับคู่ระหว่างตัวแปรแบบ 2 มิติ (2D) เพื่อดูพื้นที่ทับซ้อนและโครงสร้างการแยกกลุ่มของชิ้นงาน")
+# ==========================================
+# โหมด 4: ความโปร่งใสของโมเดล (Explainable AI - SHAP)
+# ==========================================
+elif app_mode == "4. 🔍 ความโปร่งใสของโมเดล (Explainable AI - SHAP)":
+    st.title("🔍 ทำไม AI ถึงตัดสินใจแบบนี้? (Explainable AI by SHAP)")
+    st.markdown("ถอดรหัสกล่องดำ (Black Box) ของ AI เพื่อดูว่าพารามิเตอร์ตัวใดกำลัง **เพิ่มความเสี่ยง (สีแดง)** หรือ **ดึงความเสี่ยงลง (สีเขียว)** สำหรับชิ้นงานม้วนนี้")
+    st.divider()
 
-            fig_scatter = px.scatter_matrix(
-                raw_df,
-                dimensions=selected_multi_cols,
-                color='Defect_Label',
-                color_discrete_map={'Good (ปกติ)': '#3498db', 'NG (ตำหนิ)': '#e74c3c'},
-                opacity=0.6,
-                title="ความสัมพันธ์แบบจับคู่พารามิเตอร์ (Pairwise Relationships)"
+    input_df = create_input_ui()
+
+    st.divider()
+    if st.button("🧠 สร้าง SHAP Explanation Chart", type="primary", use_container_width=True):
+        with st.spinner("AI กำลังถอดรหัสพารามิเตอร์ (คำนวณ SHAP Values)..."):
+            # 1. Preprocess ข้อมูลปัจจุบัน
+            X_curr = optimizer._preprocess(input_df)
+            current_prob = model.predict(X_curr, verbose=0)[0][0]
+
+            # 2. สร้าง Background Data สำหรับ SHAP (ใช้ Sample จาก raw_df)
+            bg_df = raw_df.sample(n=min(50, len(raw_df)), random_state=42)
+            bg_X = optimizer._preprocess(bg_df)
+
+            # 3. คำนวณ SHAP
+            explainer = shap.KernelExplainer(model.predict, bg_X)
+            shap_values = explainer.shap_values(X_curr)
+
+            # จัดการ Shape ของ Keras (บางเวอร์ชันรีเทิร์นลิสต์ บางเวอร์ชันเป็น array)
+            sv = np.array(shap_values)
+            if len(sv.shape) == 3:
+                contribs = sv[0, 0, :]
+            elif len(sv.shape) == 2:
+                contribs = sv[0, :]
+            else:
+                contribs = sv.flatten()
+
+            # สร้าง DataFrame สำหรับ Plotly
+            shap_df = pd.DataFrame({
+                'Feature': X_curr.columns,
+                'Contribution': contribs,
+                'Value': X_curr.iloc[0].values
+            })
+            # คัดเฉพาะตัวที่มีผลมากสุด 15 ตัว
+            shap_df['Abs_Contrib'] = shap_df['Contribution'].abs()
+            shap_df = shap_df.sort_values(by='Abs_Contrib', ascending=False).head(15)
+            shap_df = shap_df.sort_values(by='Contribution', ascending=True) # จัดเรียงก่อนพล็อต
+
+            shap_df['Type'] = np.where(shap_df['Contribution'] > 0, 'เพิ่มความเสี่ยง (NG+)', 'ลดความเสี่ยง (Safe-)')
+
+            # สร้างกราฟ Plotly Horizontal Bar
+            fig_shap = px.bar(
+                shap_df, x='Contribution', y='Feature', color='Type',
+                orientation='h',
+                color_discrete_map={'เพิ่มความเสี่ยง (NG+)': '#e74c3c', 'ลดความเสี่ยง (Safe-)': '#2ecc71'},
+                title=f"พารามิเตอร์ที่มีอิทธิพลต่อความเสี่ยง (โอกาส NG ประเมินไว้ที่ {current_prob*100:.2f}%)",
+                labels={'Contribution': 'ผลกระทบต่อความเสี่ยง (SHAP Value)', 'Feature': 'ชื่อพารามิเตอร์'}
             )
-            fig_scatter.update_traces(diagonal_visible=False)
-            # ปรับขนาด Layout ให้กว้างขึ้นเพื่อแสดงกราฟย่อยได้ชัดเจน
-            fig_scatter.update_layout(height=800)
+            fig_shap.update_layout(height=600)
 
-            st.plotly_chart(fig_scatter, use_container_width=True)
-            st.info("💡 **Analyst Insight:** มองหาช่องย่อย (Sub-plot) ที่จุดสีแดง (NG) และสีฟ้า (Good) แยกโซนออกจากกันอย่างชัดเจน นั่นคือ 'คู่พารามิเตอร์' (Pair) ที่มีนัยสำคัญสูงที่สุดในการแบ่งแยกของเสียครับ")
-    else:
-        st.warning("⚠️ กรุณาเลือกพารามิเตอร์จากช่องด้านบนอย่างน้อย 2 ตัวแปรเพื่อเริ่มการวิเคราะห์ภาพรวม")
+        st.plotly_chart(fig_shap, use_container_width=True)
+        st.info("💡 **วิธีอ่านกราฟ:** แท่ง **สีแดง** ชี้ไปทางขวา คือพารามิเตอร์ที่กำลังสร้างปัญหาให้เกิดของเสีย (NG) ส่วนแท่ง **สีเขียว** ชี้ไปทางซ้าย คือพารามิเตอร์ที่กำลังช่วยรั้งให้เหล็กแผ่นนี้ปลอดภัย")
+
+# ==========================================
+# โหมด 5: ระบบแนะนำขั้นสูง (Constrained Optimization)
+# ==========================================
+elif app_mode == "5. 🚀 ระบบแนะนำขั้นสูง (Constrained Optimization)":
+    st.title("🚀 ระบบแนะนำพารามิเตอร์ขั้นสูง (Advanced Constrained Optimizer)")
+    st.markdown("""
+    ยกระดับการค้นหาทางออกด้วยกฎทางวิศวกรรม (Domain Physics Integration) AI จะไม่แนะนำพารามิเตอร์แบบสุ่มสี่สุ่มห้า แต่จะถูกตีกรอบด้วยเงื่อนไข:
+    * **กฎระบายความร้อน (Cooling Physics):** `CT_HEAD` ต้องมีอุณหภูมิต่ำกว่า `FT_HEAD` อย่างน้อย 150 องศาเซลเซียสเสมอ
+    * **กฎรักษาความหนา (Draft Consistency):** ผลรวมของแรงกด (Total Draft: PSDRFT1-5) ต้องคงที่ (แกว่งได้ไม่เกิน 2%) 
+    * *ค้นหาลึกขึ้น:* ขยายขอบเขตการจำลองสถานการณ์เป็น 2,000 รูปแบบ (กว้างขึ้นเป็น 10%)
+    """)
+    st.divider()
+
+    input_df = create_input_ui()
+
+    st.divider()
+    if st.button("⚙️ รันระบบ Advanced Optimizer", type="primary", use_container_width=True):
+        with st.spinner("AI กำลังจำลองสถานการณ์ทางฟิสิกส์ 2,000 รูปแบบ..."):
+            suggestions, final_prob, status = optimizer.optimize(input_df, advanced_mode=True)
+
+        st.subheader("🎯 ผลลัพธ์จาก Advanced Optimizer")
+        if status == "safe":
+            st.success(f"🟩 **สถานะปกติ (GOOD):** พารามิเตอร์ปัจจุบันมีความปลอดภัยสูง (โอกาสเกิด Defect เพียง {final_prob * 100:.2f}%)")
+        elif status == "unable_due_to_physics":
+            st.error("⚠️ **ไม่พบทางออก:** ระบบจำลองสถานการณ์ไว้ 2,000 รูปแบบ แต่ไม่มีรูปแบบใดที่ 'ความเสี่ยงต่ำ' และ 'ผ่านกฎฟิสิกส์วิศวกรรม' พร้อมๆ กัน กรุณาตรวจสอบวัตถุดิบ (Slab)")
+        elif status == "unable":
+            st.warning("⚠️ **ไม่พบทางแก้ไขที่ปลอดภัยภายใต้เงื่อนไขจำกัด 10%**")
+        else:
+            st.error(f"🟥 **จุดเสี่ยงระดับสูง (NG DETECTED):** ความเสี่ยงก่อนแก้: {final_prob*100:.2f}%")
+            st.success(f"💡 **AI Advanced Guidelines:** พบแนวทางแก้ปัญหาที่ตรงตามหลักวิศวกรรม! (ความเสี่ยงหลังแก้: {final_prob * 100:.2f}%)")
+
+            guide_data = []
+            for k, v in suggestions.items():
+                guide_data.append({
+                    "Parameter": k,
+                    "ปัจจุบัน (Current)": f"{v['Current']:.2f}",
+                    "แนะนำ (Guideline)": f"{v['Suggested']:.2f}",
+                    "การกระทำ (Action)": f"🔺 เพิ่มขึ้น (+{v['Change']:.2f})" if v['Change'] > 0 else f"🔻 ลดลง ({v['Change']:.2f})"
+                })
+            st.table(pd.DataFrame(guide_data).set_index("Parameter"))
+            st.info("ℹ️ *ค่าตัวเลขชุดนี้ผ่านการยืนยันแล้วว่าสอดคล้องกับกฎ Cooling Physics และ Draft Consistency*")
